@@ -1,5 +1,7 @@
 # graphrag-ai-copyright
 
+Based on the YouTube video: https://www.youtube.com/watch?v=JTVx6i6MzVw
+
 ## Setup
 
 ```bash
