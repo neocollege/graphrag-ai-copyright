@@ -1,0 +1,15 @@
+# Scraping / search
+google-search-results
+requests
+beautifulsoup4
+lxml
+
+# Data
+pandas
+
+# Config
+python-dotenv
+
+# Notebooks
+jupyter
+ipykernel
