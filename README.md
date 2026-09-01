@@ -17,4 +17,4 @@ python -m ipykernel install --user --name graphrag-ai-copyright \
   --display-name "Python (graphrag-ai-copyright)"
 ```
 
-Copy `.env.example` to `.env` and fill in your `SERPAPI_API_KEY`.
+Copy `.env.example` to `.env` and fill in your `SERPAPI_KEY`.

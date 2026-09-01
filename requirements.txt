@@ -13,3 +13,12 @@ python-dotenv
 # Notebooks
 jupyter
 ipykernel
+
+# GraphRAG pipeline
+llama-index
+llama-index-llms-google-genai
+networkx
+# graspologic has no stable release for Python 3.13 (<=3.4.4 cap at <3.13);
+# 3.4.5.dev2 lifts it to <3.15. Drop the pin once 3.4.5 ships.
+graspologic==3.4.5.dev2
+nest-asyncio
