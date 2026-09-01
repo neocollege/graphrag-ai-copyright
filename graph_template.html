@@ -1,0 +1,817 @@
+<!doctype html>
+<!--
+  Knowledge-graph visualisation template.
+
+  USAGE (from the notebook):
+
+      import json, html as _html
+      with open("graph_template.html") as f:
+          template = f.read()
+      payload = json.dumps(graph_payload).replace("<", r"<")   # keep </script> intact
+      with open(GRAPH_OUTPUT_FILE, "w") as f:
+          f.write(template.replace("__GRAPH_DATA__", payload))
+
+  DATA SHAPE:
+
+      {
+        "meta":  {"title": "...", "subtitle": "...", "generated": "2026-09-01"},
+        "nodes": [{"id","name","type","description","aliases":[],"source","title"}],
+        "edges": [{"source","target","label","description"}]
+      }
+
+  "type" should be one of the ontology labels (ORGANIZATION, PERSON, GOVERNMENT,
+  LEGISLATION, LEGAL_CASE, AI_SYSTEM, CONCEPT); anything else renders as the
+  neutral "unclassified" style. Open this file directly to see a demo dataset.
+
+  No external requests - fonts, layout and interaction are all local, so the
+  output works offline and from file://.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knowledge Graph</title>
+<style>
+  /* ---------------------------------------------------------------------
+     Palette. Categorical slots are the four that pass the all-pairs colour
+     checks in BOTH modes (a node-link diagram is an all-pairs case: any node
+     can land beside any other). Seven entity types therefore ride a composite
+     hue x shape encoding - shape carries type, hue groups related types - so
+     identity is never colour-alone.
+     --------------------------------------------------------------------- */
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --surface-2: #f4f3f0;
+    --surface-3: #eceae6;
+    --border:    #dbd9d3;
+    --border-strong: #c2bfb7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #82817c;
+
+    --cat-a: #2a78d6;   /* blue    - actors      */
+    --cat-b: #eda100;   /* yellow  - legal       */
+    --cat-c: #e87ba4;   /* magenta - technical   */
+    --cat-d: #008300;   /* green   - state       */
+    --cat-muted: #8a8985;
+
+    --edge: #cfcdc6;
+    --edge-strong: #9a9891;
+    --focus: #2a78d6;
+    --radius: 10px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --surface-2: #232322;
+      --surface-3: #2d2d2b;
+      --border:    #3a3a37;
+      --border-strong: #4e4e4a;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #918f86;
+      --cat-a: #3987e5;
+      --cat-b: #c98500;
+      --cat-c: #d55181;
+      --cat-d: #008300;
+      --cat-muted: #8a8985;
+      --edge: #403f3c;
+      --edge-strong: #6f6d67;
+      --focus: #3987e5;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --surface-2: #232322;
+    --surface-3: #2d2d2b;
+    --border:    #3a3a37;
+    --border-strong: #4e4e4a;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #918f86;
+    --cat-a: #3987e5;
+    --cat-b: #c98500;
+    --cat-c: #d55181;
+    --cat-d: #008300;
+    --cat-muted: #8a8985;
+    --edge: #403f3c;
+    --edge-strong: #6f6d67;
+    --focus: #3987e5;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text-primary);
+    background: var(--surface-1);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ---- header ---- */
+  header {
+    padding: 18px 22px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex; flex-wrap: wrap; gap: 20px 32px; align-items: flex-end;
+  }
+  .titles h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+  .titles p  { margin: 3px 0 0; font-size: 13px; color: var(--text-secondary); }
+  .stats { display: flex; gap: 26px; margin-left: auto; }
+  .stat .n { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  .stat .k { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+
+  /* ---- toolbar ---- */
+  .toolbar {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    padding: 10px 22px; border-bottom: 1px solid var(--border); background: var(--surface-2);
+  }
+  input[type="search"], select, button {
+    font: inherit; color: var(--text-primary);
+    background: var(--surface-1); border: 1px solid var(--border-strong);
+    border-radius: 7px; padding: 5px 10px;
+  }
+  input[type="search"] { min-width: 210px; }
+  input[type="search"]:focus-visible, select:focus-visible, button:focus-visible,
+  .legend-item:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-3); }
+  .seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 7px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: var(--surface-1); padding: 5px 12px; }
+  .seg button[aria-pressed="true"] { background: var(--surface-3); font-weight: 600; }
+  .spacer { margin-left: auto; }
+  .hint { color: var(--text-muted); font-size: 12px; }
+
+  /* ---- legend ---- */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 10px 22px; border-bottom: 1px solid var(--border);
+  }
+  .legend-item {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 3px 10px 3px 6px; border: 1px solid var(--border);
+    border-radius: 999px; background: var(--surface-1);
+    font-size: 12px; cursor: pointer; user-select: none;
+  }
+  .legend-item:hover { border-color: var(--border-strong); }
+  .legend-item[aria-pressed="false"] { opacity: 0.4; }
+  .legend-item .count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+  /* ---- main ---- */
+  main { flex: 1; display: flex; min-height: 0; }
+  .canvas-wrap { flex: 1; position: relative; min-width: 0; }
+  svg#graph { width: 100%; height: 100%; display: block; cursor: grab; }
+  svg#graph.panning { cursor: grabbing; }
+  .edge { stroke: var(--edge); stroke-width: 1.5; fill: none; }
+  .edge.hot { stroke: var(--edge-strong); stroke-width: 2.5; }
+  .edge.dim { opacity: 0.25; }
+  .node { cursor: pointer; }
+  /* The group is focusable for keyboard users; suppress the UA ring on click
+     so only keyboard focus draws one (the selected ring already shows state). */
+  .node:focus { outline: none; }
+  .node:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: 3px; }
+  /* 2px surface ring keeps overlapping marks separate without a drawn border */
+  .node .mark { stroke: var(--surface-1); stroke-width: 2; }
+  .node.sel .mark { stroke: var(--text-primary); stroke-width: 2.5; }
+  .node.dim { opacity: 0.18; }
+  /* Labels wear text tokens, never the series colour; the halo keeps them
+     legible where they cross edges. Always on - two light-mode hues sit below
+     3:1 on the surface, so visible labels are the required relief. */
+  .label {
+    font-size: 10.5px; fill: var(--text-secondary); pointer-events: none;
+    paint-order: stroke; stroke: var(--surface-1); stroke-width: 3px; stroke-linejoin: round;
+  }
+  .label.dim { opacity: 0.25; }
+  .node.sel + .label, .label.hot { fill: var(--text-primary); font-weight: 600; }
+  .edge-label {
+    font-size: 9.5px; fill: var(--text-muted); pointer-events: none;
+    paint-order: stroke; stroke: var(--surface-1); stroke-width: 3px; stroke-linejoin: round;
+  }
+
+  /* ---- side panel ---- */
+  aside {
+    width: 320px; flex: none; border-left: 1px solid var(--border);
+    background: var(--surface-2); overflow-y: auto; padding: 18px 20px;
+  }
+  aside h2 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
+  aside .type-line { display: flex; align-items: center; gap: 7px; margin-bottom: 14px; }
+  aside .type-line span { font-size: 12px; color: var(--text-secondary); }
+  .field { margin-bottom: 13px; }
+  .field .k {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-muted); margin-bottom: 2px;
+  }
+  .field .v { font-size: 13px; color: var(--text-primary); overflow-wrap: anywhere; }
+  .field .v.desc { color: var(--text-secondary); }
+  .rel-list { list-style: none; margin: 0; padding: 0; }
+  .rel-list li {
+    padding: 6px 0; border-top: 1px solid var(--border); font-size: 12.5px;
+    color: var(--text-secondary);
+  }
+  .rel-list .verb {
+    font-family: var(--mono); font-size: 10.5px; color: var(--text-muted);
+    display: block; letter-spacing: 0.02em;
+  }
+  .rel-list a { color: var(--text-primary); text-decoration: none; border-bottom: 1px solid var(--border-strong); cursor: pointer; }
+  .empty { color: var(--text-muted); font-size: 13px; }
+  .alias { font-family: var(--mono); font-size: 11px; }
+
+  /* ---- table view ---- */
+  .table-wrap { flex: 1; overflow: auto; padding: 18px 22px 40px; }
+  .table-wrap h3 { font-size: 13px; font-weight: 600; margin: 24px 0 8px; }
+  .table-wrap h3:first-child { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--text-muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .swatch-cell { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+
+  /* ---- tooltip ---- */
+  #tip {
+    position: fixed; pointer-events: none; z-index: 20; max-width: 280px;
+    background: var(--surface-1); border: 1px solid var(--border-strong);
+    border-radius: 8px; padding: 8px 11px; font-size: 12.5px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.13); opacity: 0; transition: opacity .09s;
+  }
+  #tip .t-name { font-weight: 600; margin-bottom: 1px; }
+  #tip .t-type { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  #tip .t-desc { color: var(--text-secondary); margin-top: 5px; }
+
+  [hidden] { display: none !important; }
+  @media (max-width: 820px) {
+    aside { display: none; }
+    .stats { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="titles">
+      <h1 id="doc-title">Knowledge Graph</h1>
+      <p id="doc-subtitle"></p>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="n" id="stat-nodes">0</div><div class="k">Entities</div></div>
+      <div class="stat"><div class="n" id="stat-edges">0</div><div class="k">Relationships</div></div>
+      <div class="stat"><div class="n" id="stat-types">0</div><div class="k">Types</div></div>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <input type="search" id="search" placeholder="Search entities…" aria-label="Search entities">
+    <select id="rel-filter" aria-label="Filter by relationship"><option value="">All relationships</option></select>
+    <div class="seg" role="group" aria-label="View">
+      <button id="view-graph" aria-pressed="true">Graph</button>
+      <button id="view-table" aria-pressed="false">Table</button>
+    </div>
+    <button id="relayout">Re-run layout</button>
+    <div class="spacer"></div>
+    <span class="hint" id="graph-hint">Drag to pan · scroll to zoom · click a node</span>
+    <button id="theme" aria-label="Toggle colour theme">◐</button>
+  </div>
+
+  <div class="legend" id="legend"></div>
+
+  <main>
+    <div class="canvas-wrap" id="graph-view">
+      <svg id="graph" role="img" aria-label="Force-directed knowledge graph">
+        <g id="viewport">
+          <g id="edges"></g>
+          <g id="edge-labels"></g>
+          <g id="nodes"></g>
+          <g id="labels"></g>
+        </g>
+      </svg>
+    </div>
+
+    <div class="table-wrap" id="table-view" hidden></div>
+
+    <aside id="panel">
+      <p class="empty">Select a node to inspect it.</p>
+    </aside>
+  </main>
+</div>
+
+<div id="tip" role="tooltip"></div>
+
+<script id="graph-data" type="application/json">__GRAPH_DATA__</script>
+<script>
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------- data ----
+  const DEMO = {
+    meta: { title: "Knowledge Graph", subtitle: "Demo data — replace __GRAPH_DATA__ to render your own graph." },
+    nodes: [
+      { id: "OpenAI", name: "OpenAI", type: "ORGANIZATION", description: "AI lab behind the GPT series.", aliases: ["OpenAI", "Openai"] },
+      { id: "The New York Times", name: "The New York Times", type: "ORGANIZATION", description: "News publisher and copyright plaintiff." },
+      { id: "ChatGPT", name: "ChatGPT", type: "AI_SYSTEM", description: "Conversational assistant built on the GPT series.", aliases: ["ChatGPT", "Chatgpt"] },
+      { id: "Fair Use", name: "Fair Use", type: "CONCEPT", description: "Doctrine permitting limited unlicensed use." },
+      { id: "U.S. Copyright Office", name: "U.S. Copyright Office", type: "GOVERNMENT", description: "Federal registrar of copyright." },
+      { id: "AI Act", name: "AI Act", type: "LEGISLATION", description: "EU regulation on artificial intelligence." },
+      { id: "Thaler v. Perlmutter", name: "Thaler v. Perlmutter", type: "LEGAL_CASE", description: "Authorship of AI-generated works." },
+      { id: "Stephen Thaler", name: "Stephen Thaler", type: "PERSON", description: "Researcher who filed the disputed registration." }
+    ],
+    edges: [
+      { source: "The New York Times", target: "OpenAI", label: "FILED_AGAINST", description: "Copyright infringement suit over training data." },
+      { source: "ChatGPT", target: "OpenAI", label: "PART_OF" },
+      { source: "OpenAI", target: "Fair Use", label: "ADVOCATES_FOR", description: "Argues training is transformative." },
+      { source: "AI Act", target: "OpenAI", label: "REGULATES" },
+      { source: "Stephen Thaler", target: "Thaler v. Perlmutter", label: "DEFENDANT_IN" },
+      { source: "U.S. Copyright Office", target: "Thaler v. Perlmutter", label: "REFERENCES" },
+      { source: "U.S. Copyright Office", target: "Fair Use", label: "REFERENCES" },
+      { source: "ChatGPT", target: "Fair Use", label: "REFERENCES" }
+    ]
+  };
+
+  const raw = document.getElementById("graph-data").textContent.trim();
+  let DATA;
+  try {
+    DATA = raw && raw.indexOf("__GRAPH") !== 0 ? JSON.parse(raw) : DEMO;
+  } catch (err) {
+    console.error("Could not parse injected graph data; showing demo.", err);
+    DATA = DEMO;
+  }
+  if (!DATA.nodes || !DATA.nodes.length) DATA = DEMO;
+
+  // --------------------------------------------------------------- style ----
+  // hue groups related types; shape carries the type itself.
+  const TYPE_STYLE = {
+    ORGANIZATION: { hue: "a", shape: "circle",   label: "Organization" },
+    PERSON:       { hue: "a", shape: "triangle", label: "Person" },
+    GOVERNMENT:   { hue: "d", shape: "square",   label: "Government" },
+    LEGISLATION:  { hue: "b", shape: "diamond",  label: "Legislation" },
+    LEGAL_CASE:   { hue: "b", shape: "pentagon", label: "Legal case" },
+    AI_SYSTEM:    { hue: "c", shape: "hexagon",  label: "AI system" },
+    CONCEPT:      { hue: "c", shape: "cross",    label: "Concept" }
+  };
+  const FALLBACK = { hue: "muted", shape: "ring", label: "Unclassified" };
+  const styleFor = (t) => TYPE_STYLE[String(t || "").toUpperCase()] || FALLBACK;
+  const colorFor = (t) => "var(--cat-" + styleFor(t).hue + ")";
+
+  function shapePath(kind, r) {
+    const poly = (n, rot) => {
+      const pts = [];
+      for (let i = 0; i < n; i++) {
+        const a = rot + (i * 2 * Math.PI) / n;
+        pts.push((r * Math.cos(a)).toFixed(2) + "," + (r * Math.sin(a)).toFixed(2));
+      }
+      return "M" + pts.join("L") + "Z";
+    };
+    switch (kind) {
+      case "square":   { const s = r * 0.88; return `M${-s},${-s}H${s}V${s}H${-s}Z`; }
+      case "triangle": return poly(3, -Math.PI / 2);
+      case "diamond":  return poly(4, -Math.PI / 2);
+      case "pentagon": return poly(5, -Math.PI / 2);
+      case "hexagon":  return poly(6, -Math.PI / 2);
+      case "cross":    { const a = r * 0.40, b = r * 1.05;
+                         return `M${-a},${-b}H${a}V${-a}H${b}V${a}H${a}V${b}H${-a}V${a}H${-b}V${-a}H${-a}Z`; }
+      default:         return `M${-r},0A${r},${r} 0 1,0 ${r},0A${r},${r} 0 1,0 ${-r},0Z`;
+    }
+  }
+
+  // ---------------------------------------------------------------- model ----
+  const nodes = DATA.nodes.map((n) => ({
+    id: String(n.id != null ? n.id : n.name),
+    name: String(n.name != null ? n.name : n.id),
+    type: String(n.type || "ENTITY").toUpperCase(),
+    description: n.description || "",
+    aliases: Array.isArray(n.aliases) ? n.aliases : [],
+    source: n.source || "", title: n.title || "",
+    x: 0, y: 0, vx: 0, vy: 0, deg: 0, fixed: false
+  }));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+
+  const edges = [];
+  (DATA.edges || []).forEach((e) => {
+    const s = byId.get(String(e.source)), t = byId.get(String(e.target));
+    if (!s || !t || s === t) return;               // skip dangling refs and self-loops
+    edges.push({ s, t, label: e.label || "RELATED", description: e.description || "" });
+    s.deg++; t.deg++;
+  });
+
+  const radius = (n) => 6 + Math.min(11, Math.sqrt(n.deg) * 3.1);
+
+  const typeCounts = new Map();
+  nodes.forEach((n) => typeCounts.set(n.type, (typeCounts.get(n.type) || 0) + 1));
+  const relLabels = Array.from(new Set(edges.map((e) => e.label))).sort();
+
+  const hidden = new Set();            // hidden entity types
+  let relFilter = "";
+  let query = "";
+  let selected = null;
+
+  const matches = (n) => !query || n.name.toLowerCase().includes(query) ||
+                          n.aliases.some((a) => String(a).toLowerCase().includes(query));
+  const nodeVisible = (n) => !hidden.has(n.type);
+  const edgeVisible = (e) => nodeVisible(e.s) && nodeVisible(e.t) && (!relFilter || e.label === relFilter);
+
+  // ------------------------------------------------------------ simulation ----
+  const svg = document.getElementById("graph");
+  const gViewport = document.getElementById("viewport");
+  const gEdges = document.getElementById("edges");
+  const gEdgeLabels = document.getElementById("edge-labels");
+  const gNodes = document.getElementById("nodes");
+  const gLabels = document.getElementById("labels");
+  let W = 800, H = 600;
+
+  function seed() {
+    // Seed on an ellipse matching the canvas aspect, so the settled blob is
+    // shaped like the space it has to fill rather than a circle in a wide box.
+    const rx = W * 0.38, ry = H * 0.38;
+    nodes.forEach((n, i) => {
+      const a = (i / nodes.length) * 2 * Math.PI;
+      n.x = W / 2 + rx * Math.cos(a) * (0.6 + 0.4 * ((i * 37) % 7) / 7);
+      n.y = H / 2 + ry * Math.sin(a) * (0.6 + 0.4 * ((i * 53) % 5) / 5);
+      n.vx = n.vy = 0; n.fixed = false;
+    });
+  }
+
+  let alpha = 1, raf = null;
+  // Gravity is what sets the cluster's absolute size, so it stays weak - the
+  // view is fitted to the result afterwards rather than the layout being tuned
+  // to the canvas.
+  const REPULSION = 9000, SPRING = 0.03, LINK_LEN = 110, DAMP = 0.86, GRAVITY = 0.0035;
+
+  function tick() {
+    const live = nodes.filter(nodeVisible);
+    for (let i = 0; i < live.length; i++) {
+      const a = live[i];
+      for (let j = i + 1; j < live.length; j++) {
+        const b = live[j];
+        let dx = b.x - a.x, dy = b.y - a.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) { d2 = 1; dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); }
+        const d = Math.sqrt(d2);
+        const f = (REPULSION / d2) * alpha;
+        const fx = (dx / d) * f, fy = (dy / d) * f;
+        a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
+      }
+    }
+    edges.forEach((e) => {
+      if (!edgeVisible(e)) return;
+      const dx = e.t.x - e.s.x, dy = e.t.y - e.s.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const f = (d - LINK_LEN) * SPRING * alpha;
+      const fx = (dx / d) * f, fy = (dy / d) * f;
+      e.s.vx += fx; e.s.vy += fy; e.t.vx -= fx; e.t.vy -= fy;
+    });
+    // Anisotropic centring: equilibrium radius goes as sqrt(repulsion/gravity),
+    // so splitting gravity by the canvas aspect makes the blob settle at that
+    // aspect too - a wide canvas gets a wide graph instead of a circle.
+    const s = Math.max(0.6, Math.min(2.4, W / Math.max(1, H)));
+    const gx = GRAVITY / s, gy = GRAVITY * s;
+    live.forEach((n) => {
+      n.vx += (W / 2 - n.x) * gx * alpha;
+      n.vy += (H / 2 - n.y) * gy * alpha;
+      if (n.fixed) { n.vx = n.vy = 0; return; }
+      n.vx *= DAMP; n.vy *= DAMP;
+      n.x += Math.max(-30, Math.min(30, n.vx));
+      n.y += Math.max(-30, Math.min(30, n.vy));
+    });
+    alpha *= 0.985;
+  }
+
+  function run() {
+    if (raf) cancelAnimationFrame(raf);
+    const step = () => {
+      tick(); position();
+      if (alpha > 0.008) raf = requestAnimationFrame(step);
+      else raf = null;
+    };
+    raf = requestAnimationFrame(step);
+  }
+
+  /* Settle synchronously before the first paint. Doing the initial layout in
+     requestAnimationFrame makes the opening view depend on frame timing, and a
+     backgrounded tab is throttled to ~1fps - the graph would sit unsettled and
+     unfitted. A few hundred ticks cost milliseconds, so just run them. */
+  function settle(iterations) {
+    if (raf) { cancelAnimationFrame(raf); raf = null; }
+    alpha = 1;
+    for (let i = 0; i < iterations && alpha > 0.008; i++) tick();
+    position();
+    fitView();
+  }
+
+  /* Fit the settled layout to the canvas. The simulation's absolute scale
+     depends on node count and connectivity, so rather than tuning constants
+     per graph, let it settle and scale the viewport to what it produced. */
+  function fitView() {
+    const live = nodes.filter(nodeVisible);
+    if (!live.length) return;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    live.forEach((n) => {
+      const r = radius(n) + 26;                  // leave room for the label
+      minX = Math.min(minX, n.x - r); maxX = Math.max(maxX, n.x + r);
+      minY = Math.min(minY, n.y - r); maxY = Math.max(maxY, n.y + r);
+    });
+    const pad = 24;
+    const k = Math.max(0.25, Math.min(2.2,
+      Math.min((W - pad * 2) / Math.max(1, maxX - minX), (H - pad * 2) / Math.max(1, maxY - minY))));
+    view.k = k;
+    view.x = (W - (maxX - minX) * k) / 2 - minX * k;
+    view.y = (H - (maxY - minY) * k) / 2 - minY * k;
+    applyView();
+  }
+  function reheat(a) { alpha = Math.max(alpha, a == null ? 0.5 : a); if (!raf) run(); }
+
+  // ----------------------------------------------------------------- draw ----
+  const nodeEls = new Map(), labelEls = new Map(), edgeEls = new Map(), edgeLabelEls = new Map();
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  };
+
+  function build() {
+    gEdges.textContent = ""; gEdgeLabels.textContent = "";
+    gNodes.textContent = ""; gLabels.textContent = "";
+    edgeEls.clear(); edgeLabelEls.clear(); nodeEls.clear(); labelEls.clear();
+
+    edges.forEach((e) => {
+      const line = el("line", { class: "edge" });
+      line.addEventListener("mouseenter", (ev) => { line.classList.add("hot"); showEdgeTip(ev, e); });
+      line.addEventListener("mouseleave", () => { line.classList.remove("hot"); hideTip(); });
+      gEdges.appendChild(line); edgeEls.set(e, line);
+
+      const t = el("text", { class: "edge-label", "text-anchor": "middle" });
+      t.textContent = e.label;
+      gEdgeLabels.appendChild(t); edgeLabelEls.set(e, t);
+    });
+
+    nodes.forEach((n) => {
+      const g = el("g", { class: "node", tabindex: "0", role: "button" });
+      g.setAttribute("aria-label", n.name + ", " + styleFor(n.type).label);
+      const mark = el("path", { class: "mark", d: shapePath(styleFor(n.type).shape, radius(n)), fill: colorFor(n.type) });
+      g.appendChild(mark);
+      g.addEventListener("mouseenter", (ev) => showNodeTip(ev, n));
+      g.addEventListener("mousemove", moveTip);
+      g.addEventListener("mouseleave", hideTip);
+      g.addEventListener("click", (ev) => { ev.stopPropagation(); select(n); });
+      g.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); select(n); } });
+      attachDrag(g, n);
+      gNodes.appendChild(g); nodeEls.set(n, g);
+
+      const t = el("text", { class: "label", "text-anchor": "middle" });
+      t.textContent = n.name;
+      gLabels.appendChild(t); labelEls.set(n, t);
+    });
+  }
+
+  let labelBudget = 0;   // 0 = label everything; else the minimum degree to label
+  function position() {
+    const visibleCount = nodes.reduce((a, n) => a + (nodeVisible(n) ? 1 : 0), 0);
+    labelBudget = visibleCount > 55 ? 2 : 0;
+    edges.forEach((e) => {
+      const line = edgeEls.get(e), lab = edgeLabelEls.get(e);
+      const vis = edgeVisible(e);
+      line.style.display = vis ? "" : "none";
+      if (!vis) { lab.style.display = "none"; return; }
+      line.setAttribute("x1", e.s.x); line.setAttribute("y1", e.s.y);
+      line.setAttribute("x2", e.t.x); line.setAttribute("y2", e.t.y);
+      const near = selected && (e.s === selected || e.t === selected);
+      lab.style.display = near ? "" : "none";
+      if (near) {
+        lab.setAttribute("x", (e.s.x + e.t.x) / 2);
+        lab.setAttribute("y", (e.s.y + e.t.y) / 2 - 3);
+      }
+      line.classList.toggle("dim", !!query && !(matches(e.s) && matches(e.t)));
+    });
+    nodes.forEach((n) => {
+      const g = nodeEls.get(n), t = labelEls.get(n);
+      const vis = nodeVisible(n);
+      g.style.display = vis ? "" : "none";
+      t.style.display = vis ? "" : "none";
+      if (!vis) return;
+      g.setAttribute("transform", `translate(${n.x.toFixed(1)},${n.y.toFixed(1)})`);
+      t.setAttribute("x", n.x.toFixed(1));
+      t.setAttribute("y", (n.y + radius(n) + 11).toFixed(1));
+      const dim = !!query && !matches(n);
+      g.classList.toggle("dim", dim);
+      t.classList.toggle("dim", dim);
+      t.classList.toggle("hot", !!query && matches(n));
+      g.classList.toggle("sel", n === selected);
+      // Past ~55 visible nodes every label at once is unreadable, so the weakly
+      // connected ones drop out; the table view still carries every name.
+      if (labelBudget) {
+        const keep = n === selected || n.deg >= labelBudget ||
+                     (!!query && matches(n)) ||
+                     (selected && edges.some((e) => (e.s === selected && e.t === n) ||
+                                                    (e.t === selected && e.s === n)));
+        t.style.display = keep ? "" : "none";
+      }
+    });
+  }
+
+  // ------------------------------------------------------------ interaction ----
+  let view = { x: 0, y: 0, k: 1 };
+  const applyView = () => gViewport.setAttribute("transform", `translate(${view.x},${view.y}) scale(${view.k})`);
+
+  svg.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const r = svg.getBoundingClientRect();
+    const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    const k = Math.max(0.25, Math.min(4, view.k * (ev.deltaY < 0 ? 1.11 : 0.9)));
+    view.x = mx - ((mx - view.x) / view.k) * k;
+    view.y = my - ((my - view.y) / view.k) * k;
+    view.k = k; applyView();
+  }, { passive: false });
+
+  let panning = null;
+  svg.addEventListener("mousedown", (ev) => {
+    if (ev.target.closest(".node")) return;
+    panning = { x: ev.clientX - view.x, y: ev.clientY - view.y };
+    svg.classList.add("panning");
+  });
+  window.addEventListener("mousemove", (ev) => {
+    if (!panning) return;
+    view.x = ev.clientX - panning.x; view.y = ev.clientY - panning.y; applyView();
+  });
+  window.addEventListener("mouseup", () => { panning = null; svg.classList.remove("panning"); });
+  svg.addEventListener("click", (ev) => { if (!ev.target.closest(".node")) select(null); });
+
+  function attachDrag(g, n) {
+    g.addEventListener("mousedown", (ev) => {
+      ev.stopPropagation();
+      const r = svg.getBoundingClientRect();
+      const toLocal = (e) => ({ x: (e.clientX - r.left - view.x) / view.k, y: (e.clientY - r.top - view.y) / view.k });
+      n.fixed = true;
+      const move = (e) => { const p = toLocal(e); n.x = p.x; n.y = p.y; reheat(0.3); };
+      const up = () => {
+        n.fixed = false;
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+      };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+    });
+  }
+
+  // -------------------------------------------------------------- tooltip ----
+  const tip = document.getElementById("tip");
+  function showTip(ev, html) { tip.innerHTML = html; tip.style.opacity = "1"; moveTip(ev); }
+  function moveTip(ev) {
+    const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+    let x = ev.clientX + pad, y = ev.clientY + pad;
+    if (x + w > innerWidth - 8) x = ev.clientX - w - pad;
+    if (y + h > innerHeight - 8) y = ev.clientY - h - pad;
+    tip.style.left = x + "px"; tip.style.top = y + "px";
+  }
+  function hideTip() { tip.style.opacity = "0"; }
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  function showNodeTip(ev, n) {
+    showTip(ev,
+      `<div class="t-name">${esc(n.name)}</div>` +
+      `<div class="t-type">${esc(styleFor(n.type).label)} · ${n.deg} link${n.deg === 1 ? "" : "s"}</div>` +
+      (n.description ? `<div class="t-desc">${esc(n.description.slice(0, 180))}${n.description.length > 180 ? "…" : ""}</div>` : ""));
+  }
+  function showEdgeTip(ev, e) {
+    showTip(ev,
+      `<div class="t-name">${esc(e.s.name)} → ${esc(e.t.name)}</div>` +
+      `<div class="t-type">${esc(e.label)}</div>` +
+      (e.description ? `<div class="t-desc">${esc(e.description.slice(0, 180))}</div>` : ""));
+  }
+
+  // ---------------------------------------------------------------- panel ----
+  const panel = document.getElementById("panel");
+  function select(n) {
+    selected = n; position();
+    if (!n) { panel.innerHTML = '<p class="empty">Select a node to inspect it.</p>'; return; }
+    const rels = edges.filter((e) => e.s === n || e.t === n)
+      .map((e) => {
+        const other = e.s === n ? e.t : e.s;
+        const dir = e.s === n ? "→" : "←";
+        return `<li><span class="verb">${esc(e.label)} ${dir}</span><a data-goto="${esc(other.id)}">${esc(other.name)}</a></li>`;
+      }).join("");
+    panel.innerHTML =
+      `<h2>${esc(n.name)}</h2>` +
+      `<div class="type-line">` +
+        `<svg width="13" height="13" viewBox="-9 -9 18 18" aria-hidden="true">` +
+          `<path d="${shapePath(styleFor(n.type).shape, 7)}" fill="${colorFor(n.type)}"></path></svg>` +
+        `<span>${esc(styleFor(n.type).label)}</span></div>` +
+      (n.description ? `<div class="field"><div class="k">Description</div><div class="v desc">${esc(n.description)}</div></div>` : "") +
+      (n.aliases.length > 1 ? `<div class="field"><div class="k">Merged aliases</div><div class="v alias">${n.aliases.map(esc).join(", ")}</div></div>` : "") +
+      (n.title ? `<div class="field"><div class="k">Article</div><div class="v">${esc(n.title)}</div></div>` : "") +
+      (n.source ? `<div class="field"><div class="k">Source</div><div class="v">${esc(n.source)}</div></div>` : "") +
+      `<div class="field"><div class="k">Relationships (${edges.filter((e) => e.s === n || e.t === n).length})</div></div>` +
+      (rels ? `<ul class="rel-list">${rels}</ul>` : '<p class="empty">No relationships.</p>');
+    panel.querySelectorAll("[data-goto]").forEach((a) => {
+      a.addEventListener("click", () => { const t = byId.get(a.dataset.goto); if (t) { select(t); reheat(0.2); } });
+    });
+  }
+
+  // --------------------------------------------------------------- legend ----
+  const legend = document.getElementById("legend");
+  function buildLegend() {
+    const order = Object.keys(TYPE_STYLE).filter((t) => typeCounts.has(t))
+      .concat(Array.from(typeCounts.keys()).filter((t) => !TYPE_STYLE[t]).sort());
+    legend.textContent = "";
+    order.forEach((t) => {
+      const st = styleFor(t);
+      const b = document.createElement("button");
+      b.className = "legend-item"; b.setAttribute("aria-pressed", "true");
+      b.innerHTML =
+        `<svg width="13" height="13" viewBox="-9 -9 18 18" aria-hidden="true">` +
+          `<path d="${shapePath(st.shape, 7)}" fill="${colorFor(t)}"></path></svg>` +
+        `<span>${esc(st.label)}</span><span class="count">${typeCounts.get(t)}</span>`;
+      b.addEventListener("click", () => {
+        if (hidden.has(t)) hidden.delete(t); else hidden.add(t);
+        b.setAttribute("aria-pressed", hidden.has(t) ? "false" : "true");
+        settle(260);
+      });
+      legend.appendChild(b);
+    });
+  }
+
+  // ----------------------------------------------------------- table view ----
+  function buildTable() {
+    const wrap = document.getElementById("table-view");
+    const ents = nodes.slice().sort((a, b) => b.deg - a.deg || a.name.localeCompare(b.name));
+    const rows = ents.map((n) => {
+      const st = styleFor(n.type);
+      return `<tr><td><span class="swatch-cell">` +
+        `<svg width="11" height="11" viewBox="-9 -9 18 18" aria-hidden="true">` +
+          `<path d="${shapePath(st.shape, 7)}" fill="${colorFor(n.type)}"></path></svg>` +
+        `${esc(n.name)}</span></td><td>${esc(st.label)}</td><td class="num">${n.deg}</td>` +
+        `<td>${n.aliases.length > 1 ? esc(n.aliases.join(", ")) : ""}</td>` +
+        `<td>${esc(n.description)}</td></tr>`;
+    }).join("");
+    const relRows = edges.slice()
+      .sort((a, b) => a.s.name.localeCompare(b.s.name) || a.label.localeCompare(b.label))
+      .map((e) => `<tr><td>${esc(e.s.name)}</td><td>${esc(e.label)}</td><td>${esc(e.t.name)}</td><td>${esc(e.description)}</td></tr>`)
+      .join("");
+    wrap.innerHTML =
+      `<h3>Entities (${ents.length})</h3>` +
+      `<table><thead><tr><th>Entity</th><th>Type</th><th>Links</th><th>Merged aliases</th><th>Description</th></tr></thead><tbody>${rows}</tbody></table>` +
+      `<h3>Relationships (${edges.length})</h3>` +
+      `<table><thead><tr><th>Source</th><th>Relationship</th><th>Target</th><th>Description</th></tr></thead><tbody>${relRows}</tbody></table>`;
+  }
+
+  // --------------------------------------------------------------- chrome ----
+  function boot() {
+    const meta = DATA.meta || {};
+    document.getElementById("doc-title").textContent = meta.title || "Knowledge Graph";
+    document.title = meta.title || "Knowledge Graph";
+    const sub = [meta.subtitle, meta.generated ? "Generated " + meta.generated : ""].filter(Boolean).join(" · ");
+    document.getElementById("doc-subtitle").textContent = sub;
+    document.getElementById("stat-nodes").textContent = nodes.length;
+    document.getElementById("stat-edges").textContent = edges.length;
+    document.getElementById("stat-types").textContent = typeCounts.size;
+
+    const sel = document.getElementById("rel-filter");
+    relLabels.forEach((l) => { const o = document.createElement("option"); o.value = l; o.textContent = l; sel.appendChild(o); });
+    sel.addEventListener("change", () => { relFilter = sel.value; position(); });
+
+    document.getElementById("search").addEventListener("input", (ev) => {
+      query = ev.target.value.trim().toLowerCase(); position();
+    });
+    document.getElementById("relayout").addEventListener("click", () => { seed(); settle(400); });
+
+    const vg = document.getElementById("view-graph"), vt = document.getElementById("view-table");
+    const setView = (graph) => {
+      vg.setAttribute("aria-pressed", String(graph));
+      vt.setAttribute("aria-pressed", String(!graph));
+      document.getElementById("graph-view").hidden = !graph;
+      document.getElementById("table-view").hidden = graph;
+      document.getElementById("panel").hidden = !graph;
+      document.getElementById("graph-hint").hidden = !graph;
+    };
+    vg.addEventListener("click", () => setView(true));
+    vt.addEventListener("click", () => setView(false));
+
+    document.getElementById("theme").addEventListener("click", () => {
+      const cur = document.documentElement.getAttribute("data-theme");
+      const dark = cur ? cur === "dark"
+                       : matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+    });
+
+    buildLegend(); buildTable(); build();
+    resize(); seed(); settle(400);
+    window.addEventListener("resize", () => { resize(); fitView(); });
+  }
+
+  function resize() {
+    const r = svg.getBoundingClientRect();
+    W = r.width || 800; H = r.height || 600;
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>
